@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <!-- レスポンシブ対応：画面サイズに合わせてレイアウト調整 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>カスタムカテゴリー付き段階的プロンプト生成システム</title>
+  <!-- PWA 用の manifest ファイルへのリンク（manifest.json を同ディレクトリに配置） -->
+  <link rel="manifest" href="manifest.json">
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    /* カテゴリー一覧をグリッド表示 */
+    #categoriesContainer {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 10px;
+    }
+    .category-section {
+      border: 1px solid #ddd;
+      padding: 10px;
+      border-radius: 5px;
+      position: relative;
+      background-color: #fff;
+    }
+    .category-section label {
+      display: block;
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+    /* カスタムセレクト（クリックすると下部シートが出現） */
+    .custom-select {
+      border: 1px solid #ccc;
+      padding: 5px;
+      cursor: pointer;
+      user-select: none;
+      margin-bottom: 5px;
+      background-color: #fdfdfd;
+    }
+    .custom-select:hover {
+      background-color: #f0f0f0;
+    }
+    button {
+      padding: 5px 10px;
+      margin-right: 5px;
+      margin-bottom: 5px;
+      cursor: pointer;
+    }
+    textarea {
+      width: 100%;
+      padding: 5px;
+      box-sizing: border-box;
+    }
+    /* 下部シート（モーダル）のスタイル */
+    #customDropdownModal {
+      display: none;
+      position: fixed;
+      left: 0;
+      bottom: 0;
+      width: 100%;
+      height: 50vh;
+      background: #fff;
+      border-top: 1px solid #ccc;
+      box-shadow: 0 -2px 10px rgba(0,0,0,0.2);
+      z-index: 1000;
+      padding: 10px;
+      box-sizing: border-box;
+    }
+    #customDropdownModal .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    #customDropdownModal .modal-header h3 {
+      margin: 0;
+      font-size: 1.2em;
+    }
+    /* モーダル内の選択肢をグリッド表示：横5列 */
+    #modalOptionsContainer {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+    }
+    .option-item {
+      position: relative;
+      padding: 8px;
+      border: 1px solid #eee;
+      cursor: pointer;
+      text-align: center;
+      background: #fafafa;
+      border-radius: 4px;
+    }
+    .option-item:hover {
+      background-color: #f9f9f9;
+    }
+    .option-item button {
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      font-size: 10px;
+      padding: 2px 4px;
+      cursor: pointer;
+    }
+    /* カテゴリー削除ボタン：小さく右上に配置 */
+    .delete-category-btn {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      font-size: 10px;
+      padding: 2px 4px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>カスタムカテゴリー付き段階的プロンプト生成システム</h1>
+  
+  <!-- カテゴリー追加 -->
+  <div class="section">
+    <button id="addCategoryBtn">カテゴリーを追加</button>
+  </div>
+  
+  <!-- カテゴリーコンテナ（グリッド表示） -->
+  <div id="categoriesContainer"></div>
+  
+  <!-- プロンプト出力 -->
+  <div class="section">
+    <h2>最終プロンプト</h2>
+    <textarea id="finalPrompt" rows="4" readonly></textarea>
+    <br>
+    <button id="copyBtn">コピー</button>
+  </div>
+  
+  <!-- 下部シート用モーダル -->
+  <div id="customDropdownModal">
+    <div class="modal-header">
+      <h3>選択肢を選択</h3>
+      <button id="modalCancelBtn">キャンセル</button>
+    </div>
+    <div id="modalOptionsContainer"></div>
+  </div>
+  
+  <script>
+    const STORAGE_KEY = "categoriesData";
+    // デフォルトカテゴリー（日本語名、英語名、選択肢、選択値初期化）
+    const defaultCategories = [
+      { jp: "髪型", en: "Hair", options: ["ショート", "ロング", "カーリー"], selected: "" },
+      { jp: "体位", en: "Pose", options: ["立っている", "座っている", "寝転んでいる"], selected: "" },
+      { jp: "表情", en: "Expression", options: ["笑っている", "怒っている", "悲しんでいる"], selected: "" },
+      { jp: "身体特徴", en: "Body Features", options: ["細身", "筋肉質", "ふくよか"], selected: "" }
+    ];
+
+    // ローカルストレージからカテゴリーを読み込み（なければデフォルトを利用）
+    function loadCategories() {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        try {
+          return JSON.parse(stored);
+        } catch (e) {
+          return defaultCategories;
+        }
+      } else {
+        return defaultCategories;
+      }
+    }
+    // カテゴリーをローカルストレージに保存
+    function saveCategories(categoriesArray) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(categoriesArray));
+    }
+    let categories = loadCategories();
+    const categoriesContainer = document.getElementById("categoriesContainer");
+    // 現在操作中のカテゴリーインデックス
+    let currentCategoryIndex = null;
+
+    // 各カテゴリーセクションをレンダリング（カスタムセレクトを利用）
+    function renderCategories() {
+      categoriesContainer.innerHTML = "";
+      categories.forEach((category, index) => {
+        const sectionDiv = document.createElement("div");
+        sectionDiv.className = "category-section";
+        sectionDiv.dataset.index = index;
+        
+        // カテゴリーラベル（日本語）
+        const label = document.createElement("label");
+        label.textContent = category.jp + ":";
+        sectionDiv.appendChild(label);
+        
+        // カスタムセレクト（選択中の値を表示、未選択なら「選択してください」）
+        const customSelect = document.createElement("div");
+        customSelect.className = "custom-select";
+        customSelect.dataset.index = index;
+        customSelect.textContent = category.selected ? category.selected : "選択してください";
+        customSelect.addEventListener("click", function() {
+          openDropdown(index);
+        });
+        sectionDiv.appendChild(customSelect);
+        
+        // 選択肢追加ボタン
+        const addOptionBtn = document.createElement("button");
+        addOptionBtn.textContent = "選択肢追加";
+        addOptionBtn.dataset.index = index;
+        addOptionBtn.addEventListener("click", function() {
+          addOption(index);
+        });
+        sectionDiv.appendChild(addOptionBtn);
+        
+        // カテゴリー削除ボタン
+        const deleteCategoryBtn = document.createElement("button");
+        deleteCategoryBtn.textContent = "カテゴリー削除";
+        deleteCategoryBtn.className = "delete-category-btn";
+        deleteCategoryBtn.dataset.index = index;
+        deleteCategoryBtn.addEventListener("click", function() {
+          deleteCategory(index);
+        });
+        sectionDiv.appendChild(deleteCategoryBtn);
+        
+        categoriesContainer.appendChild(sectionDiv);
+      });
+      updatePrompt();
+    }
+    
+    // プロンプト出力（各カテゴリーは英語名、未選択なら "Not Selected" を表示）
+    const finalPromptTextarea = document.getElementById("finalPrompt");
+    function updatePrompt() {
+      let promptParts = [];
+      categories.forEach(category => {
+        const selectedVal = category.selected || "Not Selected";
+        promptParts.push(`${category.en}: ${selectedVal}`);
+      });
+      finalPromptTextarea.value = promptParts.join("、 ");
+    }
+    
+    // カテゴリー内に新たな選択肢を追加する
+    function addOption(categoryIndex) {
+      const category = categories[categoryIndex];
+      const newOption = prompt(`${category.jp}の新しい選択肢を入力してください`);
+      if (newOption && newOption.trim() !== "") {
+        category.options.push(newOption.trim());
+        saveCategories(categories);
+        if (currentCategoryIndex === categoryIndex) {
+          renderModalOptions();
+        }
+      }
+    }
+    
+    // 新規カテゴリーを追加（日本語名と英語名を入力）
+    function addCategory() {
+      const newCategoryJP = prompt("新しいカテゴリー名（日本語）を入力してください");
+      if (!newCategoryJP || newCategoryJP.trim() === "") return;
+      const newCategoryEN = prompt("新しいカテゴリーの英語名を入力してください");
+      if (!newCategoryEN || newCategoryEN.trim() === "") return;
+      categories.push({ jp: newCategoryJP.trim(), en: newCategoryEN.trim(), options: [], selected: "" });
+      saveCategories(categories);
+      renderCategories();
+    }
+    document.getElementById("addCategoryBtn").addEventListener("click", addCategory);
+    
+    // モーダル（下部シート）を開く
+    const modal = document.getElementById("customDropdownModal");
+    const modalOptionsContainer = document.getElementById("modalOptionsContainer");
+    function openDropdown(categoryIndex) {
+      currentCategoryIndex = categoryIndex;
+      renderModalOptions();
+      modal.style.display = "block";
+    }
+    // モーダル内に選択肢をグリッド形式でレンダリング（横5列）
+    function renderModalOptions() {
+      modalOptionsContainer.innerHTML = "";
+      const category = categories[currentCategoryIndex];
+      if (category.options.length === 0) {
+        const noOptionDiv = document.createElement("div");
+        noOptionDiv.textContent = "選択肢がありません。選択肢追加してください。";
+        modalOptionsContainer.appendChild(noOptionDiv);
+      } else {
+        category.options.forEach((option, optionIndex) => {
+          const optionDiv = document.createElement("div");
+          optionDiv.className = "option-item";
+          
+          // オプションテキスト（クリックで選択）
+          const optionText = document.createElement("div");
+          optionText.textContent = option;
+          optionText.style.cursor = "pointer";
+          optionText.addEventListener("click", function() {
+            selectOption(option);
+          });
+          optionDiv.appendChild(optionText);
+          
+          // 削除ボタン（クリックで選択肢削除）
+          const delBtn = document.createElement("button");
+          delBtn.textContent = "削除";
+          delBtn.addEventListener("click", function(e) {
+            e.stopPropagation(); // 選択処理を抑制
+            deleteOption(currentCategoryIndex, optionIndex);
+          });
+          optionDiv.appendChild(delBtn);
+          
+          modalOptionsContainer.appendChild(optionDiv);
+        });
+      }
+    }
+    // 選択肢を選んだ際の処理
+    function selectOption(optionValue) {
+      categories[currentCategoryIndex].selected = optionValue;
+      saveCategories(categories);
+      // 対応するカスタムセレクトの表示を更新
+      const customSelects = document.querySelectorAll(".custom-select");
+      customSelects.forEach(cs => {
+        if (cs.dataset.index == currentCategoryIndex) {
+          cs.textContent = optionValue;
+        }
+      });
+      closeDropdown();
+      updatePrompt();
+    }
+    // 選択肢を削除する処理
+    function deleteOption(categoryIndex, optionIndex) {
+      const category = categories[categoryIndex];
+      const optionValue = category.options[optionIndex];
+      if (confirm("この選択肢を削除しますか？")) {
+        // 削除前に選択されている値と比較
+        if (category.selected === optionValue) {
+          category.selected = "";
+          // 対応するカスタムセレクトもリセット
+          const customSelects = document.querySelectorAll(".custom-select");
+          customSelects.forEach(cs => {
+            if (cs.dataset.index == categoryIndex) {
+              cs.textContent = "選択してください";
+            }
+          });
+        }
+        category.options.splice(optionIndex, 1);
+        saveCategories(categories);
+        renderModalOptions();
+        updatePrompt();
+      }
+    }
+    // カテゴリーを削除する処理
+    function deleteCategory(categoryIndex) {
+      if (confirm("このカテゴリーを削除しますか？")) {
+        categories.splice(categoryIndex, 1);
+        saveCategories(categories);
+        renderCategories();
+        updatePrompt();
+      }
+    }
+    // モーダルを閉じる
+    function closeDropdown() {
+      modal.style.display = "none";
+      currentCategoryIndex = null;
+    }
+    // モーダルキャンセルボタン
+    document.getElementById("modalCancelBtn").addEventListener("click", closeDropdown);
+    
+    // コピー機能
+    document.getElementById("copyBtn").addEventListener("click", function(){
+      finalPromptTextarea.select();
+      document.execCommand("copy");
+      alert("プロンプトをコピーしました！");
+    });
+    
+    renderCategories();
+
+    // PWA用：サービスワーカーの登録（対応ブラウザの場合）
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('service-worker.js').then(function(registration) {
+          console.log('ServiceWorker registration successful with scope: ', registration.scope);
+        }, function(err) {
+          console.log('ServiceWorker registration failed: ', err);
+        });
+      });
+    }
+  </script>
+</body>
+</html>
